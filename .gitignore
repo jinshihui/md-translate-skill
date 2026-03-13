@@ -1,0 +1,8 @@
+__pycache__/
+.venv/
+*.pyc
+*.progress.json
+*.metrics.json
+*.batch_input.jsonl
+*.batch_manifest.json
+*.batch_report.json

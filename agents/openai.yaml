@@ -1,0 +1,4 @@
+interface:
+  display_name: "Markdown Bilingual Translate"
+  short_description: "Translate one Markdown paper into English-Chinese bilingual Markdown."
+  default_prompt: "Use $md-bilingual-translate to translate a Markdown paper into bilingual Simplified Chinese while preserving formulas and code blocks."
