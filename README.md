@@ -2,41 +2,69 @@
 
 [中文说明](./README.zh-CN.md)
 
-This repo is a minimal Codex skill.
+`md-bilingual-translate` is a Codex skill for turning one Markdown file into bilingual output.
+For each translatable paragraph, it keeps the original text first and inserts the Simplified Chinese translation right below it.
+Formulas, fenced code blocks, and image-only lines are preserved.
 
-The public runtime is just one script:
+![Bilingual Markdown example](00assets/image-1.png)
 
-- `scripts/translate_md.py`
+## What This Is For
 
-It translates one Markdown file into a bilingual Markdown file:
+Use this skill when you want to:
 
-- original block
-- Simplified Chinese translation right below it
+- translate a paper or note written in Markdown
+- keep the original text and the Chinese translation together
+- avoid breaking formulas or code blocks during translation
 
-Formulas and fenced code blocks are preserved.
+This repo also works as a standalone script if you do not need Codex skill integration.
 
-![alt text](00assets/image-1.png)
+## Install
 
-## Requirements
+### Option 1: Install as a Codex skill
 
-- Python 3.8+
-- `ARK_API_KEY`
+Clone or copy this repository to your Codex skills directory:
 
-No extra package is required.
+```powershell
+git clone <your-repo-url> "$env:CODEX_HOME\skills\md-bilingual-translate"
+```
 
-The script reads `ARK_API_KEY` from:
+If `CODEX_HOME` is not set, Codex usually uses `~/.codex`.
 
-1. the current environment
-2. `%CODEX_HOME%\.env`
-3. `~/.codex/.env`
+### Option 2: Run it as a plain script
+
+Clone this repository anywhere in your workspace and run `scripts/translate_md.py` directly.
+
+No extra Python package is required.
+
+## Configure API Key
+
+The translator requires `DEEPSEEK_API_KEY`.
+
+It looks for the key in this order:
+
+1. `DEEPSEEK_API_KEY` in the current environment
+2. `DEEPSEEK_API_KEY` in `%CODEX_HOME%\.env`
+3. `ARK_API_KEY` in the current environment or `%CODEX_HOME%\.env` as a backward-compatible fallback
 
 Example:
 
 ```env
-ARK_API_KEY=your_api_key_here
+DEEPSEEK_API_KEY=sk-your_api_key_here
 ```
 
-## Usage
+## Use It In Codex
+
+After the skill is installed, ask Codex to use `$md-bilingual-translate` on a Markdown file.
+
+Example request:
+
+```text
+Use $md-bilingual-translate to translate papers/example.md into bilingual Simplified Chinese Markdown.
+```
+
+## Use It From The Terminal
+
+Run the script from the repository root:
 
 ```powershell
 python .\scripts\translate_md.py --input-path papers\example.md
@@ -50,9 +78,11 @@ python .\scripts\translate_md.py `
   --output-path papers\example_zh.md
 ```
 
-Default output files:
+## Output
+
+By default, the script creates:
 
 - `papers/example_zh.md`
 - `papers/example_zh.md.metrics.json`
 
-The script may also create a temporary progress file during translation and remove it after success.
+During translation it may also create a temporary progress file and remove it after a successful run.

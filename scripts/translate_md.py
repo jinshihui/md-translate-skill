@@ -9,8 +9,8 @@ from pathlib import Path
 from urllib import error, request
 
 
-API_URL = "https://ark.cn-beijing.volces.com/api/v3/responses"
-DEFAULT_MODEL = "doubao-seed-translation-250915"
+API_URL = "https://api.deepseek.com/chat/completions"
+DEFAULT_MODEL = "deepseek-chat"
 DEFAULT_SOURCE_LANGUAGE = "auto"
 DEFAULT_TARGET_LANGUAGE = "Simplified Chinese"
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
@@ -19,9 +19,10 @@ REQUEST_TIMEOUT_SECONDS = 120
 MAX_RETRIES = 3
 PROGRESS_SUFFIX = ".progress.json"
 METRICS_SUFFIX = ".metrics.json"
-DEFAULT_MAX_WORKERS = 6
-DEFAULT_MAX_GROUP_BLOCKS = 6
-DEFAULT_MAX_GROUP_CHARACTERS = 12000
+DEFAULT_MAX_WORKERS = 40
+DEFAULT_MAX_GROUP_BLOCKS = 2
+DEFAULT_MAX_GROUP_CHARACTERS = 24000
+DEFAULT_MAX_OUTPUT_TOKENS = 8192
 LANGUAGE_CODE_MAP = {
     "auto": "auto",
     "english": "en",
@@ -71,10 +72,6 @@ Markdown content:
 """
 
 
-def is_translation_model(model):
-    return model.startswith("doubao-seed-translation")
-
-
 def split_translation_prompt(prompt_text):
     for separator in ("\nMarkdown content:\n", "\nMarkdown block:\n"):
         if separator in prompt_text:
@@ -120,47 +117,37 @@ def detect_source_language(markdown_blocks, max_blocks=20, max_characters=6000):
 
 
 def build_request_payload(prompt_text, model, source_language, target_language):
-    if not is_translation_model(model):
-        return {
-            "model": model,
-            "stream": False,
-            "thinking": {"type": "disabled"},
-            "input": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": prompt_text,
-                        }
-                    ],
-                }
-            ],
-        }
-
-    source_text = split_translation_prompt(prompt_text)
     return {
         "model": model,
         "stream": False,
-        "input": [
+        "max_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a professional academic translator. "
+                    "Follow the user's Markdown preservation requirements exactly."
+                ),
+            },
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": source_text,
-                        "translation_options": {
-                            "source_language": normalize_translation_language(source_language),
-                            "target_language": normalize_translation_language(target_language),
-                        },
-                    }
-                ],
+                "content": prompt_text,
             },
         ],
     }
 
 
 def load_api_key():
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    if api_key:
+        return api_key
+
+    if CODEX_ENV_PATH.exists():
+        for line in CODEX_ENV_PATH.read_text(encoding="utf-8").splitlines():
+            stripped_line = line.strip()
+            if stripped_line.startswith("DEEPSEEK_API_KEY="):
+                return stripped_line.split("=", 1)[1].strip().strip('"').strip("'")
+
     api_key = os.environ.get("ARK_API_KEY")
     if api_key:
         return api_key
@@ -171,7 +158,10 @@ def load_api_key():
             if stripped_line.startswith("ARK_API_KEY="):
                 return stripped_line.split("=", 1)[1].strip().strip('"').strip("'")
 
-    raise ValueError(f"ARK_API_KEY is required. Set it in the environment or add it to {CODEX_ENV_PATH}.")
+    raise ValueError(
+        "DEEPSEEK_API_KEY is required. "
+        f"Set it in the environment or add it to {CODEX_ENV_PATH}."
+    )
 
 
 def split_markdown_blocks(markdown_text):
@@ -223,6 +213,27 @@ def is_passthrough_block(markdown_block):
 
 
 def extract_response_text(response_json):
+    choices = response_json.get("choices")
+    if isinstance(choices, list) and choices:
+        first_choice = choices[0]
+        if first_choice.get("finish_reason") == "length":
+            raise ValueError("Response was truncated because it reached max_tokens.")
+
+        message = first_choice.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+            if isinstance(content, list):
+                text_list = []
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") == "text" and isinstance(item.get("text"), str):
+                        text_list.append(item["text"].strip())
+                if text_list:
+                    return "\n".join(text_list)
+
     output_text = response_json.get("output_text")
     if isinstance(output_text, str) and output_text.strip():
         return output_text.strip()
@@ -284,12 +295,11 @@ def extract_response_usage(response_json):
 
 def build_404_error_message(model, detail):
     return (
-        f"Ark API request failed with status 404 for model '{model}': {detail}\n"
+        f"DeepSeek API request failed with status 404 for model '{model}': {detail}\n"
         "排查方向：\n"
-        "1. 到火山方舟控制台的开通管理确认该模型已开通。\n"
-        "2. 到模型列表确认模型 ID 完全正确，没有写错版本号。\n"
-        "3. 如果你的账号不支持直接用模型 ID 调用，请改用已创建的推理接入点。\n"
-        "4. 确认当前 base URL 仍是可用的方舟 Responses API 地址。"
+        "1. 确认模型 ID 是否正确，例如 deepseek-chat。\n"
+        "2. 确认 base URL 是否仍是 https://api.deepseek.com/chat/completions。\n"
+        "3. 确认 API key 已开通，并且 Authorization 头使用 Bearer 格式。"
     )
 
 
@@ -359,11 +369,14 @@ def request_translation(
                 )
             if exc.code == 404:
                 raise RuntimeError(build_404_error_message(model, detail)) from exc
+            if exc.code in {307, 308} and attempt < MAX_RETRIES - 1:
+                time.sleep(attempt + 1)
+                continue
             if 500 <= exc.code < 600 and attempt < MAX_RETRIES - 1:
                 time.sleep(attempt + 1)
                 continue
-            raise RuntimeError(f"Ark API request failed with status {exc.code}: {detail}") from exc
-        except (error.URLError, http.client.RemoteDisconnected, TimeoutError) as exc:
+            raise RuntimeError(f"DeepSeek API request failed with status {exc.code}: {detail}") from exc
+        except (error.URLError, http.client.RemoteDisconnected, http.client.IncompleteRead, TimeoutError) as exc:
             if request_metrics_callback is not None:
                 request_metrics_callback(
                     {
@@ -378,7 +391,7 @@ def request_translation(
                     }
                 )
             if attempt == MAX_RETRIES - 1:
-                raise RuntimeError(f"Ark API request failed after {MAX_RETRIES} attempts: {exc}") from exc
+                raise RuntimeError(f"DeepSeek API request failed after {MAX_RETRIES} attempts: {exc}") from exc
             time.sleep(attempt + 1)
 
 
@@ -387,6 +400,8 @@ def translate_block_batch(
     markdown_blocks,
     request_translation_fn,
     max_workers=DEFAULT_MAX_WORKERS,
+    max_group_blocks=DEFAULT_MAX_GROUP_BLOCKS,
+    max_group_characters=DEFAULT_MAX_GROUP_CHARACTERS,
     event_log=None,
 ):
     markdown_block = markdown_blocks[start_index]
@@ -408,9 +423,9 @@ def translate_block_batch(
         if (
             not translation_groups
             or batch_items[-2][2] is False
-            or len(translation_groups[-1]) >= DEFAULT_MAX_GROUP_BLOCKS
+            or len(translation_groups[-1]) >= max_group_blocks
             or sum(len(block_text) for _, block_text in translation_groups[-1]) + len(markdown_block)
-            > DEFAULT_MAX_GROUP_CHARACTERS
+            > max_group_characters
         ):
             if len(translation_groups) >= max_workers:
                 batch_items.pop()
@@ -497,7 +512,14 @@ def translate_block_batch(
     ]
 
 
-def translate_markdown_text(markdown_text, request_translation_fn, max_workers=DEFAULT_MAX_WORKERS, event_log=None):
+def translate_markdown_text(
+    markdown_text,
+    request_translation_fn,
+    max_workers=DEFAULT_MAX_WORKERS,
+    max_group_blocks=DEFAULT_MAX_GROUP_BLOCKS,
+    max_group_characters=DEFAULT_MAX_GROUP_CHARACTERS,
+    event_log=None,
+):
     bilingual_blocks = []
     markdown_blocks = split_markdown_blocks(markdown_text)
     block_index = 0
@@ -507,6 +529,8 @@ def translate_markdown_text(markdown_text, request_translation_fn, max_workers=D
             markdown_blocks,
             request_translation_fn,
             max_workers=max_workers,
+            max_group_blocks=max_group_blocks,
+            max_group_characters=max_group_characters,
             event_log=event_log,
         )
         for markdown_block, translated_block in output_blocks:
@@ -522,6 +546,8 @@ def translate_markdown_file(
     output_path,
     request_translation_fn,
     max_workers=DEFAULT_MAX_WORKERS,
+    max_group_blocks=DEFAULT_MAX_GROUP_BLOCKS,
+    max_group_characters=DEFAULT_MAX_GROUP_CHARACTERS,
     event_log=None,
 ):
     source_path = Path(source_path)
@@ -553,6 +579,8 @@ def translate_markdown_file(
                     markdown_blocks,
                     request_translation_fn,
                     max_workers=max_workers,
+                    max_group_blocks=max_group_blocks,
+                    max_group_characters=max_group_characters,
                     event_log=event_log,
                 )
             except Exception as exc:
@@ -610,8 +638,8 @@ def main():
         "--output-path",
         help="Path to the translated Markdown file. Defaults to <input_stem>_zh.md.",
     )
-    parser.add_argument("--model", default=DEFAULT_MODEL, help="Ark model id.")
-    parser.add_argument("--api-url", default=API_URL, help="Ark Responses API URL.")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help="DeepSeek model id.")
+    parser.add_argument("--api-url", default=API_URL, help="DeepSeek chat completions API URL.")
     parser.add_argument("--source-language", default=DEFAULT_SOURCE_LANGUAGE, help="Source language.")
     parser.add_argument("--target-language", default=DEFAULT_TARGET_LANGUAGE, help="Target language.")
     parser.add_argument(
@@ -623,6 +651,18 @@ def main():
         type=int,
         default=DEFAULT_MAX_WORKERS,
         help="Maximum number of Markdown blocks to translate concurrently.",
+    )
+    parser.add_argument(
+        "--max-group-blocks",
+        type=int,
+        default=DEFAULT_MAX_GROUP_BLOCKS,
+        help="Maximum number of translated Markdown blocks merged into one request.",
+    )
+    parser.add_argument(
+        "--max-group-characters",
+        type=int,
+        default=DEFAULT_MAX_GROUP_CHARACTERS,
+        help="Maximum number of source characters merged into one request.",
     )
     args = parser.parse_args()
 
@@ -656,6 +696,8 @@ def main():
                 request_metrics_callback=request_metrics.append,
             ),
             max_workers=args.max_workers,
+            max_group_blocks=args.max_group_blocks,
+            max_group_characters=args.max_group_characters,
             event_log=event_log,
         )
     except Exception as exc:
@@ -674,6 +716,9 @@ def main():
             "api_url": args.api_url,
             "source_language": source_language,
             "target_language": args.target_language,
+            "max_workers": args.max_workers,
+            "max_group_blocks": args.max_group_blocks,
+            "max_group_characters": args.max_group_characters,
             "total_elapsed_seconds": total_elapsed_seconds,
             "request_summary": {
                 "total_attempts": len(request_metrics),

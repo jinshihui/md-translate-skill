@@ -24,19 +24,28 @@ Use this skill when you need to translate one Markdown file into Simplified Chin
 
 ## API Key
 
-The script requires `ARK_API_KEY`.
+The script requires `DEEPSEEK_API_KEY`.
 
 It looks for the key in this order:
 
-1. current process environment
-2. `%CODEX_HOME%\.env`
-3. `~/.codex/.env`
+1. `DEEPSEEK_API_KEY` in the current process environment
+2. `DEEPSEEK_API_KEY` in `%CODEX_HOME%\.env`
+3. `ARK_API_KEY` in the current process environment or `%CODEX_HOME%\.env` as a backward-compatible fallback
 
 Example:
 
 ```env
-ARK_API_KEY=your_api_key_here
+DEEPSEEK_API_KEY=sk-your_api_key_here
 ```
+
+## Default API Settings
+
+- API URL: `https://api.deepseek.com/chat/completions`
+- Model: `deepseek-chat`
+- Default max workers: `40`
+- Default max grouped blocks per request: `2`
+- Max grouped input characters per request: `24000`
+- Max output tokens per request: `8192`
 
 ## Command
 
@@ -45,6 +54,11 @@ From the skill root:
 ```powershell
 python .\scripts\translate_md.py --input-path papers\example.md
 ```
+
+This now defaults to the measured speed-oriented configuration:
+
+- `--max-workers 40`
+- `--max-group-blocks 2`
 
 Optional output path:
 
